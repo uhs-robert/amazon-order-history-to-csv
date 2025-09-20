@@ -324,8 +324,8 @@ const processYear = async (page, year, csvPath, cookiesPath) => {
 
 const main = async () => {
   const years = getYearsFromArg();
-  const cookiesPath = path.resolve(__dirname, "cookies_us.json");
-  const csvPath = path.resolve(__dirname, "amazon-orders-us.csv");
+  const cookiesPath = path.resolve(__dirname, "cache/cookies/cookies_us.json");
+  const csvPath = path.resolve(__dirname, "output/csv/amazon-orders-us.csv");
 
   const browser = await puppeteer.launch({
     headless: false, // headful to log in once

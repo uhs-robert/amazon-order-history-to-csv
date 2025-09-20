@@ -141,3 +141,10 @@ AGENTS.md
 .gemini
 .qwen
 
+# Amazon scraper generated files
+output/
+cache/
+cookies_us.json
+amazon-orders-us.csv
+*.cookies.json
+
