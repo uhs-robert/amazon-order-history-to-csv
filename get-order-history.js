@@ -197,7 +197,7 @@ const processShipment = async (shipEl, orderDate, csvPath) => {
     let articleName = await textOrEmpty(itemEl, SELECTORS.ARTICLE_NAME);
     articleName = articleName
       ? articleName.slice(0, 80).replace(/;/g, ",")
-      : "article_name_selector error";
+      : "ERROR: selector_article_name not found";
 
     // Simple quantity detection: "2 of ..." or "2 x ..."
     let articleCount = 1;
@@ -241,7 +241,7 @@ const processOrder = async (orderEl, csvPath) => {
 
   const orderDate =
     (await textOrEmpty(orderEl, SELECTORS.ORDER_DATE)) ||
-    "order_date_selector error";
+    "ERROR: selector_order_date not found";
   const orderPriceText = await textOrEmpty(orderEl, SELECTORS.ORDER_PRICE);
   const orderPriceCents = usdToCents(orderPriceText);
   process.stdout.write(
