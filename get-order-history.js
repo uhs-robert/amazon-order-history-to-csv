@@ -343,6 +343,10 @@ const main = async () => {
   const cookiesPath = path.resolve(__dirname, "cache/cookies/cookies_us.json");
   const csvPath = path.resolve(__dirname, "output/csv/amazon-orders-us.csv");
 
+  // Ensure directories exist
+  await fsp.mkdir(path.dirname(cookiesPath), { recursive: true });
+  await fsp.mkdir(path.dirname(csvPath), { recursive: true });
+
   const browser = await puppeteer.launch({
     headless: false, // headful to log in once
     defaultViewport: null,
