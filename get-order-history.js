@@ -17,27 +17,23 @@ const BASE_URL = "https://www.amazon.com";
 const ORDERS_URL = "https://www.amazon.com/gp/your-account/order-history";
 const returnedRegex = /(Return|Returned|Refund|Refunded|Replacement)/i;
 
-const SELECTOR_ORDER_CONTAINER = "section.your-orders-content-container";
-const SELECTOR_ORDER_GROUP = `${SELECTOR_ORDER_CONTAINER} .a-box-group`;
-
-// HEADER DATA
-const SELECTOR_ORDER_DATE =
-  ".order-header .a-fixed-right-grid-col.a-col-left .a-row .a-column.a-span3 .a-row span.aok-break-word";
-const SELECTOR_ORDER_PRICE =
-  ".order-header .a-fixed-right-grid-col.a-col-left .a-row .a-column.a-span2 .a-row span.aok-break-word";
-
-// SHIPMENT DATA
-const SELECTOR_ORDER_SHIPMENTS = ".a-box.shipment";
-const SELECTOR_SHIPMENT_STATUS =
-  ".a-box-inner .a-row.shipment-top-row.js-shipment-info-container";
-
-// ARTICLE DATA
-const SELECTOR_ARTICLE_SHIPMENT =
-  ".a-box-inner .a-fixed-right-grid.a-spacing-top-medium .a-fixed-right-grid-inner.a-grid-vertical-align.a-grid-top .a-fixed-right-grid-col.a-col-left .a-row .a-fixed-left-grid .a-fixed-left-grid-inner";
-const SELECTOR_ARTICLE_NAME =
-  ".a-fixed-left-grid-col.a-col-right div:nth-of-type(1).a-row";
-const SELECTOR_ARTICLE_PRICE =
-  ".a-fixed-left-grid-col.a-col-right div.a-row .a-size-small.a-color-price";
+const SELECTORS = {
+  ORDER_CONTAINER: "#ordersContainer, section.your-orders-content-container",
+  ORDER_GROUP:
+    "#ordersContainer .a-box-group.order, section.your-orders-content-container .a-box-group.order",
+  ORDER_DATE:
+    ".order-header .a-fixed-right-grid-col.a-col-left .a-row .a-column.a-span3 .a-row span.aok-break-word",
+  ORDER_PRICE:
+    ".order-header .a-fixed-right-grid-col.a-col-left .a-row .a-column.a-span2 .a-row span.aok-break-word",
+  ORDER_SHIPMENTS: ".a-box.shipment",
+  SHIPMENT_STATUS:
+    ".a-box-inner .a-row.shipment-top-row.js-shipment-info-container",
+  ARTICLE_SHIPMENT:
+    ".a-box-inner .a-fixed-right-grid.a-spacing-top-medium .a-fixed-right-grid-inner.a-grid-vertical-align.a-grid-top .a-fixed-right-grid-col.a-col-left .a-row .a-fixed-left-grid .a-fixed-left-grid-inner",
+  ARTICLE_NAME: ".a-fixed-left-grid-col.a-col-right div:nth-of-type(1).a-row",
+  ARTICLE_PRICE:
+    ".a-fixed-left-grid-col.a-col-right div.a-row .a-size-small.a-color-price",
+};
 
 /* =========================
    Currency helpers (USD)
@@ -134,7 +130,7 @@ const ensureSignedInAndOnOrders = async (page, saveCookiesFn) => {
   await waitUntil(
     async () => {
       // If Orders has rendered, we're done.
-      const hasOrders = await page.$(SELECTOR_ORDER_CONTAINER);
+      const hasOrders = await page.$(SELECTORS.ORDER_CONTAINER);
       if (hasOrders) return true;
 
       // If we're on any Amazon sign-in/MFA/captcha route, keep waiting.
@@ -194,7 +190,8 @@ const calculateAndWriteShippingCosts = async (
 };
 
 const processShipment = async (shipEl, orderDate, csvPath) => {
-  const rawStatus = (await textOrEmpty(shipEl, SELECTOR_SHIPMENT_STATUS)) || "";
+  const rawStatus =
+    (await textOrEmpty(shipEl, SELECTORS.SHIPMENT_STATUS)) || "";
   const shipmentStatus = rawStatus.split("\n")[0].trim();
   const shipmentIsReturn = returnedRegex.test(shipmentStatus);
   console.log("  " + (shipmentStatus || "no shipment status shown"));
@@ -202,9 +199,9 @@ const processShipment = async (shipEl, orderDate, csvPath) => {
   let shipmentTotal = 0;
   let shipmentTotalAfterReturns = 0;
 
-  const itemEls = await shipEl.$$(SELECTOR_ARTICLE_SHIPMENT);
+  const itemEls = await shipEl.$$(SELECTORS.ARTICLE_SHIPMENT);
   for (const itemEl of itemEls) {
-    let articleName = await textOrEmpty(itemEl, SELECTOR_ARTICLE_NAME);
+    let articleName = await textOrEmpty(itemEl, SELECTORS.ARTICLE_NAME);
     articleName = articleName
       ? articleName.slice(0, 80).replace(/;/g, ",")
       : "article_name_selector error";
@@ -217,7 +214,7 @@ const processShipment = async (shipEl, orderDate, csvPath) => {
       articleName = articleName.replace(/^(\d+)\s+(of|x)\s+/i, "");
     }
 
-    const priceText = await textOrEmpty(itemEl, SELECTOR_ARTICLE_PRICE);
+    const priceText = await textOrEmpty(itemEl, SELECTORS.ARTICLE_PRICE);
     const singleCents = usdToCents(priceText);
     const lineCents = singleCents * articleCount;
 
@@ -248,13 +245,13 @@ const processOrder = async (orderEl, csvPath) => {
   let orderTotalPaidAfterReturns = 0;
 
   const orderDate =
-    (await textOrEmpty(orderEl, SELECTOR_ORDER_DATE)) ||
+    (await textOrEmpty(orderEl, SELECTORS.ORDER_DATE)) ||
     "order_date_selector error";
-  const orderPriceText = await textOrEmpty(orderEl, SELECTOR_ORDER_PRICE);
+  const orderPriceText = await textOrEmpty(orderEl, SELECTORS.ORDER_PRICE);
   const orderPriceCents = usdToCents(orderPriceText);
   console.log(`${orderDate}, ${centsToUSD(orderPriceCents)}`);
 
-  const shipmentEls = await orderEl.$$(SELECTOR_ORDER_SHIPMENTS);
+  const shipmentEls = await orderEl.$$(SELECTORS.ORDER_SHIPMENTS);
   for (const shipEl of shipmentEls) {
     const { shipmentTotal, shipmentTotalAfterReturns } = await processShipment(
       shipEl,
@@ -289,7 +286,7 @@ const processYear = async (page, year, csvPath, cookiesPath) => {
     await page.goto(listUrl, { waitUntil: "domcontentloaded" });
 
     // re-ensure login if session expired mid-run
-    const hasOrders = await page.$(SELECTOR_ORDER_CONTAINER);
+    const hasOrders = await page.$(SELECTORS.ORDER_CONTAINER);
     if (!hasOrders) {
       console.warn("⚠️ Session might have expired, re-checking login...");
       await ensureSignedInAndOnOrders(page, async () => {
@@ -306,7 +303,7 @@ const processYear = async (page, year, csvPath, cookiesPath) => {
       })
       .catch(() => {});
 
-    const orderEls = await page.$$(SELECTOR_ORDER_GROUP);
+    const orderEls = await page.$$(SELECTORS.ORDER_GROUP);
     const countInPage = orderEls.length;
     if (countInPage === 0) break;
 
