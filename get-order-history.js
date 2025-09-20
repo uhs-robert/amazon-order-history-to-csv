@@ -1,4 +1,3 @@
-// /home/roberth/Documents/github-uphill/amazon-order-history-scraper/get-order-history.js
 // get-order-history.js
 
 import fs from "node:fs";
@@ -18,14 +17,12 @@ const BASE_URL = "https://www.amazon.com";
 const ORDERS_URL = "https://www.amazon.com/gp/your-account/order-history";
 const returnedRegex = /(Return|Returned|Refund|Refunded|Replacement)/i;
 
-const SELECTOR_ORDER_CONTAINER =
-  "section.your-orders-content-container .a-box-group.order";
-const SELECTOR_ORDER_GROUP =
-  "section.your-orders-content-container .a-box-group.order";
+const SELECTOR_ORDER_CONTAINER = "section.your-orders-content-container";
+const SELECTOR_ORDER_GROUP = `${SELECTOR_ORDER_CONTAINER} .a-box-group`;
 const SELECTOR_ORDER_DATE =
-  ".order-info .a-box-inner .a-fixed-right-grid .a-fixed-right-grid-inner .a-fixed-right-grid-col.a-col-left .a-row .a-column.a-span4 .a-row.a-size-base";
+  ".order-header .a-fixed-right-grid-col.a-col-left .a-row .a-column.a-span3 .a-row span.aok-break-word";
 const SELECTOR_ORDER_PRICE =
-  ".order-info .a-box-inner .a-fixed-right-grid .a-fixed-right-grid-inner .a-fixed-right-grid-col.a-col-left .a-row .a-column.a-span2 .a-row.a-size-base";
+  ".order-header .a-fixed-right-grid-col.a-col-left .a-row .a-column.a-span2 .a-row span.aok-break-word";
 
 const SELECTOR_ORDER_SHIPMENTS = ".a-box.shipment";
 const SELECTOR_SHIPMENT_STATUS =
