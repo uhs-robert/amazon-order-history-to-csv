@@ -19,15 +19,19 @@ const returnedRegex = /(Return|Returned|Refund|Refunded|Replacement)/i;
 
 const SELECTOR_ORDER_CONTAINER = "section.your-orders-content-container";
 const SELECTOR_ORDER_GROUP = `${SELECTOR_ORDER_CONTAINER} .a-box-group`;
+
+// HEADER DATA
 const SELECTOR_ORDER_DATE =
   ".order-header .a-fixed-right-grid-col.a-col-left .a-row .a-column.a-span3 .a-row span.aok-break-word";
 const SELECTOR_ORDER_PRICE =
   ".order-header .a-fixed-right-grid-col.a-col-left .a-row .a-column.a-span2 .a-row span.aok-break-word";
 
+// SHIPMENT DATA
 const SELECTOR_ORDER_SHIPMENTS = ".a-box.shipment";
 const SELECTOR_SHIPMENT_STATUS =
   ".a-box-inner .a-row.shipment-top-row.js-shipment-info-container";
 
+// ARTICLE DATA
 const SELECTOR_ARTICLE_SHIPMENT =
   ".a-box-inner .a-fixed-right-grid.a-spacing-top-medium .a-fixed-right-grid-inner.a-grid-vertical-align.a-grid-top .a-fixed-right-grid-col.a-col-left .a-row .a-fixed-left-grid .a-fixed-left-grid-inner";
 const SELECTOR_ARTICLE_NAME =
@@ -129,11 +133,11 @@ const ensureSignedInAndOnOrders = async (page, saveCookiesFn) => {
   // PASSIVE wait: do NOT navigate while the user is typing OTP/password.
   await waitUntil(
     async () => {
-      // If Orders has rendered, we’re done.
+      // If Orders has rendered, we're done.
       const hasOrders = await page.$(SELECTOR_ORDER_CONTAINER);
       if (hasOrders) return true;
 
-      // If we’re on any Amazon sign-in/MFA/captcha route, keep waiting.
+      // If we're on any Amazon sign-in/MFA/captcha route, keep waiting.
       const url = page.url();
       if (
         url.includes("/ap/signin") ||
@@ -144,7 +148,7 @@ const ensureSignedInAndOnOrders = async (page, saveCookiesFn) => {
         return false; // keep waiting; user is interacting
       }
 
-      // If we’re somewhere else (home, account), just wait — user might still be navigating.
+      // If we're somewhere else (home, account), just wait — user might still be navigating.
       return false;
     },
     { timeoutMs: 10 * 60 * 1000, intervalMs: 1000 },
@@ -156,48 +160,135 @@ const ensureSignedInAndOnOrders = async (page, saveCookiesFn) => {
   } catch {}
 };
 
-/* =========================
-   Main (top-level await OK in ESM)
-   ========================= */
-const years = getYearsFromArg();
-const cookiesPath = path.resolve(__dirname, "cookies_us.json");
-const csvPath = path.resolve(__dirname, "amazon-orders-us.csv");
+const writeCSVRow = async (csvPath, rowData) => {
+  const row =
+    rowData.map((s) => `"${String(s).replace(/"/g, '""')}"`).join(";") + "\n";
+  await fsp.appendFile(csvPath, row, "utf8");
+};
 
-const browser = await puppeteer.launch({
-  headless: false, // headful to log in once
-  defaultViewport: null,
-  args: ["--start-maximized"],
-});
-const page = await browser.newPage();
-
-await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
-const hadCookies = await loadCookies(page, cookiesPath);
-if (hadCookies) {
-  await page.reload({ waitUntil: "domcontentloaded" });
-}
-
-await ensureSignedInAndOnOrders(page, async () => {
-  await saveCookies(page, cookiesPath);
-});
-
-// write CSV header
-await fsp.writeFile(
+const calculateAndWriteShippingCosts = async (
   csvPath,
-  '"Date";"Shipment Status";"Article Count";"Article Name";"Single Price";"Total Price";"Tags"\n',
-  "utf8",
-);
+  orderDate,
+  orderPriceCents,
+  orderArticlePricesTotal,
+) => {
+  let shipmentCostCents = orderPriceCents - orderArticlePricesTotal;
+  if (shipmentCostCents < 0) shipmentCostCents = 0; // gift cards/credits can make it negative
 
-let runningTotal = 0;
+  console.log("order total shipment costs: " + centsToUSD(shipmentCostCents));
 
-for (const year of years) {
+  if (shipmentCostCents > 0) {
+    const shipRowData = [
+      orderDate,
+      "",
+      "1",
+      "shipment",
+      centsToUSD(shipmentCostCents),
+      centsToUSD(shipmentCostCents),
+      "",
+    ];
+    await writeCSVRow(csvPath, shipRowData);
+  }
+
+  return shipmentCostCents;
+};
+
+const processShipment = async (shipEl, orderDate, csvPath) => {
+  const rawStatus = (await textOrEmpty(shipEl, SELECTOR_SHIPMENT_STATUS)) || "";
+  const shipmentStatus = rawStatus.split("\n")[0].trim();
+  const shipmentIsReturn = returnedRegex.test(shipmentStatus);
+  console.log("  " + (shipmentStatus || "no shipment status shown"));
+
+  let shipmentTotal = 0;
+  let shipmentTotalAfterReturns = 0;
+
+  const itemEls = await shipEl.$$(SELECTOR_ARTICLE_SHIPMENT);
+  for (const itemEl of itemEls) {
+    let articleName = await textOrEmpty(itemEl, SELECTOR_ARTICLE_NAME);
+    articleName = articleName
+      ? articleName.slice(0, 80).replace(/;/g, ",")
+      : "article_name_selector error";
+
+    // Simple quantity detection: "2 of ..." or "2 x ..."
+    let articleCount = 1;
+    const mCount = articleName.match(/^(\d+)\s+(of|x)\s+/i);
+    if (mCount) {
+      articleCount = parseInt(mCount[1], 10) || 1;
+      articleName = articleName.replace(/^(\d+)\s+(of|x)\s+/i, "");
+    }
+
+    const priceText = await textOrEmpty(itemEl, SELECTOR_ARTICLE_PRICE);
+    const singleCents = usdToCents(priceText);
+    const lineCents = singleCents * articleCount;
+
+    shipmentTotal += lineCents;
+    if (!shipmentIsReturn) shipmentTotalAfterReturns += lineCents;
+
+    console.log(`    ${articleName}`);
+    console.log(`    (${articleCount}) ${centsToUSD(lineCents)}`);
+
+    const rowData = [
+      orderDate,
+      shipmentStatus,
+      String(articleCount),
+      articleName,
+      centsToUSD(singleCents),
+      centsToUSD(shipmentIsReturn ? 0 : lineCents),
+      "",
+    ];
+
+    await writeCSVRow(csvPath, rowData);
+  }
+
+  return { shipmentTotal, shipmentTotalAfterReturns };
+};
+
+const processOrder = async (orderEl, csvPath) => {
+  let orderArticlePricesTotal = 0;
+  let orderTotalPaidAfterReturns = 0;
+
+  const orderDate =
+    (await textOrEmpty(orderEl, SELECTOR_ORDER_DATE)) ||
+    "order_date_selector error";
+  const orderPriceText = await textOrEmpty(orderEl, SELECTOR_ORDER_PRICE);
+  const orderPriceCents = usdToCents(orderPriceText);
+  console.log(`${orderDate}, ${centsToUSD(orderPriceCents)}`);
+
+  const shipmentEls = await orderEl.$$(SELECTOR_ORDER_SHIPMENTS);
+  for (const shipEl of shipmentEls) {
+    const { shipmentTotal, shipmentTotalAfterReturns } = await processShipment(
+      shipEl,
+      orderDate,
+      csvPath,
+    );
+    orderArticlePricesTotal += shipmentTotal;
+    orderTotalPaidAfterReturns += shipmentTotalAfterReturns;
+  }
+
+  console.log(
+    "order total paid after returns: " + centsToUSD(orderTotalPaidAfterReturns),
+  );
+
+  const shipmentCostCents = await calculateAndWriteShippingCosts(
+    csvPath,
+    orderDate,
+    orderPriceCents,
+    orderArticlePricesTotal,
+  );
+
+  return orderTotalPaidAfterReturns + shipmentCostCents;
+};
+
+const processYear = async (page, year, csvPath, cookiesPath) => {
   console.log(`\nSTARTING ${year}`);
   let articleOffset = 0;
+  let yearTotal = 0;
 
   while (true) {
     const listUrl = `${BASE_URL}/gp/your-account/order-history?orderFilter=year-${year}&startIndex=${articleOffset}`;
     await page.goto(listUrl, { waitUntil: "domcontentloaded" });
 
-    // ⬇️ NEW: re-ensure login if session expired mid-run
+    // re-ensure login if session expired mid-run
     const hasOrders = await page.$(SELECTOR_ORDER_CONTAINER);
     if (!hasOrders) {
       console.warn("⚠️ Session might have expired, re-checking login...");
@@ -220,106 +311,63 @@ for (const year of years) {
     if (countInPage === 0) break;
 
     for (const orderEl of orderEls) {
-      let orderArticlePricesTotal = 0;
-      let orderTotalPaidAfterReturns = 0;
-
-      const orderDate =
-        (await textOrEmpty(orderEl, SELECTOR_ORDER_DATE)) ||
-        "order_date_selector error";
-      const orderPriceText = await textOrEmpty(orderEl, SELECTOR_ORDER_PRICE);
-      const orderPriceCents = usdToCents(orderPriceText);
-      console.log(`${orderDate}, ${centsToUSD(orderPriceCents)}`);
-
-      const shipmentEls = await orderEl.$$(SELECTOR_ORDER_SHIPMENTS);
-      for (const shipEl of shipmentEls) {
-        const rawStatus =
-          (await textOrEmpty(shipEl, SELECTOR_SHIPMENT_STATUS)) || "";
-        const shipmentStatus = rawStatus.split("\n")[0].trim();
-        const shipmentIsReturn = returnedRegex.test(shipmentStatus);
-        console.log("  " + (shipmentStatus || "no shipment status shown"));
-
-        const itemEls = await shipEl.$$(SELECTOR_ARTICLE_SHIPMENT);
-        for (const itemEl of itemEls) {
-          let articleName = await textOrEmpty(itemEl, SELECTOR_ARTICLE_NAME);
-          articleName = articleName
-            ? articleName.slice(0, 80).replace(/;/g, ",")
-            : "article_name_selector error";
-
-          // Simple quantity detection: "2 of ..." or "2 x ..."
-          let articleCount = 1;
-          const mCount = articleName.match(/^(\d+)\s+(of|x)\s+/i);
-          if (mCount) {
-            articleCount = parseInt(mCount[1], 10) || 1;
-            articleName = articleName.replace(/^(\d+)\s+(of|x)\s+/i, "");
-          }
-
-          const priceText = await textOrEmpty(itemEl, SELECTOR_ARTICLE_PRICE);
-          const singleCents = usdToCents(priceText);
-          const lineCents = singleCents * articleCount;
-
-          orderArticlePricesTotal += lineCents;
-          if (!shipmentIsReturn) orderTotalPaidAfterReturns += lineCents;
-
-          console.log(`    ${articleName}`);
-          console.log(`    (${articleCount}) ${centsToUSD(lineCents)}`);
-
-          const row =
-            [
-              orderDate,
-              shipmentStatus,
-              String(articleCount),
-              articleName,
-              centsToUSD(singleCents),
-              centsToUSD(shipmentIsReturn ? 0 : lineCents),
-              "",
-            ]
-              .map((s) => `"${String(s).replace(/"/g, '""')}"`)
-              .join(";") + "\n";
-
-          await fsp.appendFile(csvPath, row, "utf8");
-        }
-      }
-
-      console.log(
-        "order total paid after returns: " +
-          centsToUSD(orderTotalPaidAfterReturns),
-      );
-      let shipmentCostCents = orderPriceCents - orderArticlePricesTotal;
-      if (shipmentCostCents < 0) shipmentCostCents = 0; // gift cards/credits can make it negative
-
-      console.log(
-        "order total shipment costs: " + centsToUSD(shipmentCostCents),
-      );
-
-      if (shipmentCostCents > 0) {
-        const shipRow =
-          [
-            orderDate,
-            "",
-            "1",
-            "shipment",
-            centsToUSD(shipmentCostCents),
-            centsToUSD(shipmentCostCents),
-            "",
-          ]
-            .map((s) => `"${String(s).replace(/"/g, '""')}"`)
-            .join(";") + "\n";
-        await fsp.appendFile(csvPath, shipRow, "utf8");
-      }
-
-      runningTotal += orderTotalPaidAfterReturns + shipmentCostCents;
+      const orderTotal = await processOrder(orderEl, csvPath);
+      yearTotal += orderTotal;
     }
 
     if (countInPage < 10) break; // last page for the year
     articleOffset += 10;
   }
 
-  console.log(`\nTOTAL SUM NOW: ${centsToUSD(runningTotal)}`);
-}
+  return yearTotal;
+};
 
-try {
-  await saveCookies(page, cookiesPath);
-} catch {}
-await browser.close();
+const main = async () => {
+  const years = getYearsFromArg();
+  const cookiesPath = path.resolve(__dirname, "cookies_us.json");
+  const csvPath = path.resolve(__dirname, "amazon-orders-us.csv");
 
-console.log(`\nDone. CSV saved to: ${csvPath}`);
+  const browser = await puppeteer.launch({
+    headless: false, // headful to log in once
+    defaultViewport: null,
+    args: ["--start-maximized"],
+  });
+  const page = await browser.newPage();
+
+  await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
+  const hadCookies = await loadCookies(page, cookiesPath);
+  if (hadCookies) {
+    await page.reload({ waitUntil: "domcontentloaded" });
+  }
+
+  await ensureSignedInAndOnOrders(page, async () => {
+    await saveCookies(page, cookiesPath);
+  });
+
+  // write CSV header
+  await fsp.writeFile(
+    csvPath,
+    '"Date";"Shipment Status";"Article Count";"Article Name";"Single Price";"Total Price";"Tags"\n',
+    "utf8",
+  );
+
+  let runningTotal = 0;
+
+  for (const year of years) {
+    const yearTotal = await processYear(page, year, csvPath, cookiesPath);
+    runningTotal += yearTotal;
+    console.log(`\nTOTAL SUM NOW: ${centsToUSD(runningTotal)}`);
+  }
+
+  try {
+    await saveCookies(page, cookiesPath);
+  } catch {}
+  await browser.close();
+
+  console.log(`\nDone. CSV saved to: ${csvPath}`);
+};
+
+/* =========================
+   Main (top-level await OK in ESM)
+   ========================= */
+await main();
