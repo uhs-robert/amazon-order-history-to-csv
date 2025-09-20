@@ -160,7 +160,9 @@ const calculateAndWriteShippingCosts = async (
   let shipmentCostCents = orderPriceCents - orderArticlePricesTotal;
   if (shipmentCostCents < 0) shipmentCostCents = 0; // gift cards/credits can make it negative
 
-  console.log("order total shipment costs: " + centsToUSD(shipmentCostCents));
+  console.log(
+    "      order total shipment costs: " + centsToUSD(shipmentCostCents),
+  );
 
   if (shipmentCostCents > 0) {
     const shipRowData = [
@@ -183,7 +185,9 @@ const processShipment = async (shipEl, orderDate, csvPath) => {
     (await textOrEmpty(shipEl, SELECTORS.SHIPMENT_STATUS)) || "";
   const shipmentStatus = rawStatus.split("\n")[0].trim();
   const shipmentIsReturn = returnedRegex.test(shipmentStatus);
-  console.log("  " + (shipmentStatus || "no shipment status shown"));
+  process.stdout.write(
+    `      🚚 ${shipmentStatus || "no shipment status shown"}\n`,
+  );
 
   let shipmentTotal = 0;
   let shipmentTotalAfterReturns = 0;
@@ -210,8 +214,10 @@ const processShipment = async (shipEl, orderDate, csvPath) => {
     shipmentTotal += lineCents;
     if (!shipmentIsReturn) shipmentTotalAfterReturns += lineCents;
 
-    console.log(`    ${articleName}`);
-    console.log(`    (${articleCount}) ${centsToUSD(lineCents)}`);
+    process.stdout.write(`      📄 ${articleName}\n`);
+    process.stdout.write(
+      `         (${articleCount}) ${centsToUSD(lineCents)}\n`,
+    );
 
     const rowData = [
       orderDate,
@@ -238,7 +244,9 @@ const processOrder = async (orderEl, csvPath) => {
     "order_date_selector error";
   const orderPriceText = await textOrEmpty(orderEl, SELECTORS.ORDER_PRICE);
   const orderPriceCents = usdToCents(orderPriceText);
-  console.log(`${orderDate}, ${centsToUSD(orderPriceCents)}`);
+  process.stdout.write(
+    `\n    📦 ${orderDate}, ${centsToUSD(orderPriceCents)}\n`,
+  );
 
   const shipmentEls = await orderEl.$$(SELECTORS.ORDER_SHIPMENTS);
   for (const shipEl of shipmentEls) {
@@ -252,7 +260,8 @@ const processOrder = async (orderEl, csvPath) => {
   }
 
   console.log(
-    "order total paid after returns: " + centsToUSD(orderTotalPaidAfterReturns),
+    "      order total paid after returns: " +
+      centsToUSD(orderTotalPaidAfterReturns),
   );
 
   const shipmentCostCents = await calculateAndWriteShippingCosts(
@@ -269,10 +278,16 @@ const processYear = async (page, year, csvPath, cookiesPath) => {
   console.log(`\nSTARTING ${year}`);
   let articleOffset = 0;
   let yearTotal = 0;
+  let pageNumber = 1;
 
   while (true) {
     const listUrl = `${BASE_URL}/gp/your-account/order-history?orderFilter=year-${year}&startIndex=${articleOffset}`;
+
+    process.stdout.write(`📄 Loading page ${pageNumber} for ${year}...`);
+
     await page.goto(listUrl, { waitUntil: "domcontentloaded" });
+    process.stdout.write(` ✅ loaded!`);
+    console.log(`\n🔍 Checking for orders...`);
 
     // re-ensure login if session expired mid-run
     const hasOrders = await page.$(SELECTORS.ORDER_CONTAINER);
@@ -283,26 +298,41 @@ const processYear = async (page, year, csvPath, cookiesPath) => {
       });
       // after re-login, reload the same page
       await page.goto(listUrl, { waitUntil: "domcontentloaded" });
+      console.log("   ✅ Re-authenticated and page reloaded");
     }
 
     // Wait for orders container to render
-    await page
-      .waitForSelector("section.your-orders-content-container", {
-        timeout: 15000,
-      })
-      .catch(() => {});
+    console.log("   ⏳ Waiting for orders container...");
+    try {
+      await page.waitForSelector(SELECTORS.ORDER_GROUP, {
+        timeout: 5000,
+      });
+      console.log("   ✅ Orders container found");
+    } catch (e) {
+      console.log("   ⚠️ Orders container not found, continuing anyway");
+    }
 
     const orderEls = await page.$$(SELECTORS.ORDER_GROUP);
     const countInPage = orderEls.length;
-    if (countInPage === 0) break;
 
-    for (const orderEl of orderEls) {
-      const orderTotal = await processOrder(orderEl, csvPath);
+    if (countInPage === 0) {
+      console.log(" ❌ No orders found");
+      break;
+    }
+
+    process.stdout.write(` ✅ Found ${countInPage} orders!\n`);
+
+    for (let i = 0; i < orderEls.length; i++) {
+      console.log(`\n  ⏳ Processing order ${i + 1}/${countInPage}: `);
+      const orderTotal = await processOrder(orderEls[i], csvPath);
       yearTotal += orderTotal;
+      process.stdout.write(`     ✅ Order ${i + 1} complete\n`);
     }
 
     if (countInPage < 10) break; // last page for the year
     articleOffset += 10;
+    pageNumber++;
+    // await sleep(300); // small, human-ish pause
   }
 
   return yearTotal;
@@ -339,10 +369,15 @@ const main = async () => {
 
   let runningTotal = 0;
 
-  for (const year of years) {
+  for (let i = 0; i < years.length; i++) {
+    const year = years[i];
+    console.log(`\n🗓️  Processing year ${year} (${i + 1}/${years.length})`);
     const yearTotal = await processYear(page, year, csvPath, cookiesPath);
     runningTotal += yearTotal;
-    console.log(`\nTOTAL SUM NOW: ${centsToUSD(runningTotal)}`);
+    console.log(
+      `✅ Year ${year} complete. Year total: $${centsToUSD(yearTotal)}`,
+    );
+    console.log(`💰 RUNNING TOTAL: $${centsToUSD(runningTotal)}`);
   }
 
   try {
