@@ -348,11 +348,17 @@ const main = async () => {
   await fsp.mkdir(path.dirname(csvPath), { recursive: true });
 
   const browser = await puppeteer.launch({
-    headless: false, // headful to log in once
+    headless: false,
     defaultViewport: null,
-    args: ["--start-maximized"],
+    args: [
+      "--start-maximized",
+      "--disable-blink-features=AutomationControlled", // mild stealth
+    ],
   });
   const page = await browser.newPage();
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => false });
+  });
 
   await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
   const hadCookies = await loadCookies(page, cookiesPath);
