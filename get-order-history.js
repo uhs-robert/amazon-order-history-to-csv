@@ -15,24 +15,18 @@ const __dirname = path.dirname(__filename);
    ========================= */
 const BASE_URL = "https://www.amazon.com";
 const ORDERS_URL = "https://www.amazon.com/gp/your-account/order-history";
-const returnedRegex = /(Return|Returned|Refund|Refunded|Replacement)/i;
 
 const SELECTORS = {
-  ORDER_CONTAINER: "#ordersContainer, section.your-orders-content-container",
+  ORDER_CONTAINER: "#ordersContainer, .your-orders-content-container",
   ORDER_GROUP:
-    "#ordersContainer .a-box-group.order, section.your-orders-content-container .a-box-group.order",
-  ORDER_DATE:
-    ".order-header .a-fixed-right-grid-col.a-col-left .a-row .a-column.a-span3 .a-row span.aok-break-word",
-  ORDER_PRICE:
-    ".order-header .a-fixed-right-grid-col.a-col-left .a-row .a-column.a-span2 .a-row span.aok-break-word",
-  ORDER_SHIPMENTS: ".a-box.shipment",
-  SHIPMENT_STATUS:
-    ".a-box-inner .a-row.shipment-top-row.js-shipment-info-container",
-  ARTICLE_SHIPMENT:
-    ".a-box-inner .a-fixed-right-grid.a-spacing-top-medium .a-fixed-right-grid-inner.a-grid-vertical-align.a-grid-top .a-fixed-right-grid-col.a-col-left .a-row .a-fixed-left-grid .a-fixed-left-grid-inner",
-  ARTICLE_NAME: ".a-fixed-left-grid-col.a-col-right div:nth-of-type(1).a-row",
-  ARTICLE_PRICE:
-    ".a-fixed-left-grid-col.a-col-right div.a-row .a-size-small.a-color-price",
+    "#ordersContainer .a-box-group.order, .your-orders-content-container .a-box-group",
+
+  ORDER_DETAILS_ROWS: "#od-subtotals .a-row, #od-subtotalsV2 .a-row",
+  ORDER_DETAILS_PURCHASES: "[data-component-name^='purchasedItems']",
+  ORDER_DETAILS_ITEM_NAME:
+    "[data-component-name^='purchasedItems'] [data-component-name^='itemTitle'] a",
+  ORDER_DETAILS_ITEM_PRICE: "[data-component-name^='purchasedItems'] .a-price",
+  ORDER_DETAILS_DATE: "[data-component-name^='orderDate']",
 };
 
 /* =========================
@@ -79,17 +73,6 @@ const getYearsFromArg = () => {
   const years = [];
   for (let y = current; y >= 2000; y--) years.push(String(y));
   return years;
-};
-
-const textOrEmpty = async (el, selector) => {
-  try {
-    const child = await el.$(selector);
-    if (!child) return "";
-    const txt = await child.evaluate((n) => n.textContent.trim());
-    return txt || "";
-  } catch {
-    return "";
-  }
 };
 
 const loadCookies = async (page, p) => {
@@ -151,130 +134,255 @@ const writeCSVRow = async (csvPath, rowData) => {
   await fsp.appendFile(csvPath, row, "utf8");
 };
 
-const calculateAndWriteShippingCosts = async (
-  csvPath,
-  orderDate,
-  orderPriceCents,
-  orderArticlePricesTotal,
-) => {
-  let shipmentCostCents = orderPriceCents - orderArticlePricesTotal;
-  if (shipmentCostCents < 0) shipmentCostCents = 0; // gift cards/credits can make it negative
+const getOrderDetails = async (detailsPage, detailsHref) => {
+  if (!detailsHref) return null;
 
-  console.log(
-    "      order total shipment costs: " + centsToUSD(shipmentCostCents),
-  );
+  try {
+    await detailsPage.goto(detailsHref, { waitUntil: "domcontentloaded" });
+    await detailsPage.waitForSelector(
+      "#orderDetails, .yohtmlc-order-details, #od-subtotals",
+      { timeout: 15000 },
+    );
 
-  if (shipmentCostCents > 0) {
-    const shipRowData = [
-      orderDate,
-      "",
-      "1",
-      "shipment",
-      centsToUSD(shipmentCostCents),
-      centsToUSD(shipmentCostCents),
-      "",
-    ];
-    await writeCSVRow(csvPath, shipRowData);
-  }
+    // DEBUG: Log page structure
+    // console.debug('      🔍 Debugging page structure...');
 
-  return shipmentCostCents;
-};
+    // Check if orderDate component exists
+    const dateComponents = await detailsPage.$$(
+      '[data-component-name*="date"], [data-component-name*="Date"]',
+    );
+    // console.debug(`      Found ${dateComponents.length} date components`);
 
-const processShipment = async (shipEl, orderDate, csvPath) => {
-  const rawStatus =
-    (await textOrEmpty(shipEl, SELECTORS.SHIPMENT_STATUS)) || "";
-  const shipmentStatus = rawStatus.split("\n")[0].trim();
-  const shipmentIsReturn = returnedRegex.test(shipmentStatus);
-  process.stdout.write(
-    `      🚚 ${shipmentStatus || "no shipment status shown"}\n`,
-  );
+    // Check if purchasedItems exists
+    const purchaseComponents = await detailsPage.$$(
+      '[data-component-name*="purchased"], [data-component-name*="item"]',
+    );
+    // console.debug(`      Found ${purchaseComponents.length} purchase/item components`);
 
-  let shipmentTotal = 0;
-  let shipmentTotalAfterReturns = 0;
+    // Get order date - try multiple approaches
+    let orderDate = "";
 
-  const itemEls = await shipEl.$$(SELECTORS.ARTICLE_SHIPMENT);
-  for (const itemEl of itemEls) {
-    let articleName = await textOrEmpty(itemEl, SELECTORS.ARTICLE_NAME);
-    articleName = articleName
-      ? articleName.slice(0, 80).replace(/;/g, ",")
-      : "ERROR: selector_article_name not found";
-
-    // Simple quantity detection: "2 of ..." or "2 x ..."
-    let articleCount = 1;
-    const mCount = articleName.match(/^(\d+)\s+(of|x)\s+/i);
-    if (mCount) {
-      articleCount = parseInt(mCount[1], 10) || 1;
-      articleName = articleName.replace(/^(\d+)\s+(of|x)\s+/i, "");
+    // Try the component selector first
+    let orderDateEl = await detailsPage.$(SELECTORS.ORDER_DETAILS_DATE);
+    if (orderDateEl) {
+      orderDate = await orderDateEl.evaluate((el) => el.textContent.trim());
+      // console.debug(`      Date from component: "${orderDate}"`);
     }
 
-    const priceText = await textOrEmpty(itemEl, SELECTORS.ARTICLE_PRICE);
-    const singleCents = usdToCents(priceText);
-    const lineCents = singleCents * articleCount;
+    // Fallback: look for "Order placed" text
+    if (!orderDate) {
+      const rows = await detailsPage.$$(".a-row");
+      // console.debug(`      Searching ${rows.length} rows for order placed text...`);
+      for (const row of rows) {
+        const text = await row.evaluate((el) => el.textContent.toLowerCase());
+        if (text.includes("order placed")) {
+          // console.debug(`      Found "order placed" in row: "${text.substring(0, 100)}..."`);
 
-    shipmentTotal += lineCents;
-    if (!shipmentIsReturn) shipmentTotalAfterReturns += lineCents;
+          // Extract date from the row text using regex (more reliable)
+          const fullText = await row.evaluate((el) => el.textContent);
+          const dateMatch = fullText.match(/(\w+\s+\d+,\s+\d{4})/);
+          if (dateMatch) {
+            orderDate = dateMatch[1];
+            // console.debug(`      Extracted date from text: "${orderDate}"`);
+            break;
+          } else {
+            // console.debug(`      No date pattern found in: "${fullText.trim()}"`);
+          }
+        }
+      }
+    }
 
-    process.stdout.write(`      📄 ${articleName}\n`);
+    // Get financial summary data by finding rows with specific label text
+    const financial = {};
+    const summaryRows = await detailsPage.$$(SELECTORS.ORDER_DETAILS_ROWS);
+
+    for (const row of summaryRows) {
+      const rowText = await row.evaluate((el) => el.textContent.toLowerCase());
+      const valueEl = await row.$(".a-span-last, .a-text-right.a-span-last");
+
+      if (valueEl) {
+        const value = await valueEl.evaluate((el) => el.textContent.trim());
+
+        if (rowText.includes("subtotal")) {
+          financial.subtotal = value;
+        } else if (rowText.includes("estimated tax")) {
+          financial.tax = value;
+        } else if (
+          rowText.includes("shipping") &&
+          rowText.includes("handling")
+        ) {
+          financial.shipping = value;
+        } else if (
+          rowText.includes("grand total") ||
+          rowText.includes("order total")
+        ) {
+          financial.grandTotal = value;
+        }
+      }
+    }
+
+    // Get items by processing each shipment
+    const items = [];
+
+    // Find all shipment containers
+    const shipmentContainers = await detailsPage.$$(
+      '[data-component="shipments"] .a-box',
+    );
+
+    for (const shipment of shipmentContainers) {
+      // Get shipment status
+      const statusEl = await shipment.$(".od-status-message .a-text-bold");
+      let shipmentStatus = "Delivered";
+      if (statusEl) {
+        const statusText = await statusEl.evaluate((el) =>
+          el.textContent.trim(),
+        );
+        if (statusText) {
+          shipmentStatus = statusText;
+        }
+      }
+
+      // Find all items in this shipment
+      const itemContainers = await shipment.$$(
+        '[data-component="purchasedItems"]',
+      );
+
+      for (const itemContainer of itemContainers) {
+        // Get item name
+        const nameEl = await itemContainer.$('[data-component="itemTitle"] a');
+        const name = nameEl
+          ? await nameEl.evaluate((el) => el.textContent.trim())
+          : "";
+
+        if (!name) continue;
+
+        // Get item price
+        const priceEl = await itemContainer.$(
+          '[data-component="unitPrice"] .a-price .a-offscreen',
+        );
+        const priceText = priceEl
+          ? await priceEl.evaluate((el) => el.textContent.trim())
+          : "";
+
+        // Get quantity (default to 1 if not found)
+        let qty = 1;
+        const qtyEl = await itemContainer.$(".od-item-view-qty");
+        if (qtyEl) {
+          const qtyText = await qtyEl.evaluate((el) => el.textContent.trim());
+          const qtyNum = parseInt(qtyText, 10);
+          if (qtyNum > 0) qty = qtyNum;
+        }
+
+        items.push({ name, qty, priceText, status: shipmentStatus });
+      }
+    }
+
+    return {
+      orderDate,
+      subtotal: financial.subtotal || "",
+      tax: financial.tax || "",
+      shipping: financial.shipping || "",
+      grandTotal: financial.grandTotal || "",
+      items,
+    };
+  } catch (error) {
+    console.warn(`Failed to get order details: ${error.message}`);
+    return null;
+  }
+};
+
+const processOrder = async (
+  orderEl,
+  page,
+  detailsPage,
+  detailsHref,
+  csvPath,
+) => {
+  if (!detailsHref) {
+    console.warn("      ⚠️ No details link found, skipping order");
+    return 0;
+  }
+
+  // Get ALL data from details page only
+  const details = await getOrderDetails(detailsPage, detailsHref);
+  if (!details) {
+    console.warn("      ⚠️ Failed to get details data, skipping order");
+    return 0;
+  }
+
+  const orderDate = details.orderDate || "ERROR: order date not found";
+  const subtotalCents = usdToCents(details.subtotal);
+  const shippingCents = usdToCents(details.shipping);
+  const taxCents = usdToCents(details.tax);
+
+  console.log(
+    `      Order: date ${details.orderDate} | subtotal ${details.subtotal} | tax ${details.tax} | shipping ${details.shipping} | items: ${details.items.length}`,
+  );
+
+  // Calculate order total from details components
+  const orderTotalCents = subtotalCents + shippingCents + taxCents;
+  process.stdout.write(
+    `\n    📦 ${orderDate}, $${centsToUSD(orderTotalCents)}\n`,
+  );
+
+  let itemsTotal = 0;
+
+  // Process items from details page
+  for (const item of details.items) {
+    const singleCents = usdToCents(item.priceText);
+    const totalCents = singleCents * item.qty;
+
+    // Only count toward total if delivered
+    if (item.status === "Delivered") {
+      itemsTotal += totalCents;
+    }
+
+    const itemName = item.name.slice(0, 80).replace(/;/g, ",");
+
+    process.stdout.write(`      📄 ${itemName}\n`);
     process.stdout.write(
-      `         (${articleCount}) ${centsToUSD(lineCents)}\n`,
+      `         (${item.qty}) ${centsToUSD(totalCents)} - ${item.status}\n`,
     );
 
     const rowData = [
       orderDate,
-      shipmentStatus,
-      String(articleCount),
-      articleName,
+      item.status,
+      String(item.qty),
+      itemName,
       centsToUSD(singleCents),
-      centsToUSD(shipmentIsReturn ? 0 : lineCents),
+      centsToUSD(item.status === "Delivered" ? totalCents : 0),
       "",
     ];
 
     await writeCSVRow(csvPath, rowData);
   }
 
-  return { shipmentTotal, shipmentTotalAfterReturns };
-};
+  console.log("      ______________________________");
+  console.log("      Subtotal: $" + centsToUSD(itemsTotal));
+  console.log("      Tax: $" + centsToUSD(taxCents));
 
-const processOrder = async (orderEl, csvPath) => {
-  let orderArticlePricesTotal = 0;
-  let orderTotalPaidAfterReturns = 0;
-
-  const orderDate =
-    (await textOrEmpty(orderEl, SELECTORS.ORDER_DATE)) ||
-    "ERROR: selector_order_date not found";
-  const orderPriceText = await textOrEmpty(orderEl, SELECTORS.ORDER_PRICE);
-  const orderPriceCents = usdToCents(orderPriceText);
-  process.stdout.write(
-    `\n    📦 ${orderDate}, ${centsToUSD(orderPriceCents)}\n`,
-  );
-
-  const shipmentEls = await orderEl.$$(SELECTORS.ORDER_SHIPMENTS);
-  for (const shipEl of shipmentEls) {
-    const { shipmentTotal, shipmentTotalAfterReturns } = await processShipment(
-      shipEl,
+  // Add shipping row if present
+  if (shippingCents > 0) {
+    console.log("      Shipping: $" + centsToUSD(shippingCents));
+    await writeCSVRow(csvPath, [
       orderDate,
-      csvPath,
-    );
-    orderArticlePricesTotal += shipmentTotal;
-    orderTotalPaidAfterReturns += shipmentTotalAfterReturns;
+      "",
+      "1",
+      "shipment",
+      centsToUSD(shippingCents),
+      centsToUSD(shippingCents),
+      "",
+    ]);
   }
 
-  console.log(
-    "      order total paid after returns: " +
-      centsToUSD(orderTotalPaidAfterReturns),
-  );
+  console.log("      ------------------------------");
+  const grandTotal = itemsTotal + shippingCents + taxCents;
+  console.log("      GrandTotal: $" + centsToUSD(grandTotal));
 
-  const shipmentCostCents = await calculateAndWriteShippingCosts(
-    csvPath,
-    orderDate,
-    orderPriceCents,
-    orderArticlePricesTotal,
-  );
-
-  return orderTotalPaidAfterReturns + shipmentCostCents;
+  return subtotalCents + shippingCents;
 };
 
-const processYear = async (page, year, csvPath, cookiesPath) => {
+const processYear = async (page, detailsPage, year, csvPath, cookiesPath) => {
   console.log(`\nSTARTING ${year}`);
   let articleOffset = 0;
   let yearTotal = 0;
@@ -322,17 +430,32 @@ const processYear = async (page, year, csvPath, cookiesPath) => {
 
     process.stdout.write(` ✅ Found ${countInPage} orders!\n`);
 
+    // collect a stable list of details links, 1:1 with orderEls
+    const detailsHrefs = await Promise.all(
+      orderEls.map((el) =>
+        el
+          .$eval('a.a-link-normal[href*="/order-details/"]', (a) => a.href)
+          .catch(() => null),
+      ),
+    );
+
+    // iterate orders
     for (let i = 0; i < orderEls.length; i++) {
-      console.log(`\n  ⏳ Processing order ${i + 1}/${countInPage}: `);
-      const orderTotal = await processOrder(orderEls[i], csvPath);
+      console.log(`\n  ⏳ Processing order ${i + 1}/${orderEls.length}:`);
+      const orderTotal = await processOrder(
+        orderEls[i],
+        page,
+        detailsPage,
+        detailsHrefs[i],
+        csvPath,
+      );
       yearTotal += orderTotal;
-      process.stdout.write(`     ✅ Order ${i + 1} complete\n`);
     }
 
     if (countInPage < 10) break; // last page for the year
     articleOffset += 10;
     pageNumber++;
-    // await sleep(300); // small, human-ish pause
+    await sleep(300); // small, human-ish pause
   }
 
   return yearTotal;
@@ -355,6 +478,7 @@ const main = async () => {
       "--disable-blink-features=AutomationControlled", // mild stealth
     ],
   });
+
   const page = await browser.newPage();
   await page.evaluateOnNewDocument(() => {
     Object.defineProperty(navigator, "webdriver", { get: () => false });
@@ -370,6 +494,11 @@ const main = async () => {
     await saveCookies(page, cookiesPath);
   });
 
+  const detailsPage = await browser.newPage();
+  await detailsPage.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => false });
+  });
+
   // write CSV header
   await fsp.writeFile(
     csvPath,
@@ -382,7 +511,13 @@ const main = async () => {
   for (let i = 0; i < years.length; i++) {
     const year = years[i];
     console.log(`\n🗓️  Processing year ${year} (${i + 1}/${years.length})`);
-    const yearTotal = await processYear(page, year, csvPath, cookiesPath);
+    const yearTotal = await processYear(
+      page,
+      detailsPage,
+      year,
+      csvPath,
+      cookiesPath,
+    );
     runningTotal += yearTotal;
     console.log(
       `✅ Year ${year} complete. Year total: $${centsToUSD(yearTotal)}`,
