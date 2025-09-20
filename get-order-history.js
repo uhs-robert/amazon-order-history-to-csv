@@ -108,17 +108,6 @@ const saveCookies = async (page, p) => {
   await fsp.writeFile(p, JSON.stringify(cookies, null, 2), "utf8");
 };
 
-const waitForEnter = () =>
-  new Promise((resolve) => {
-    process.stdin.setRawMode(true);
-    process.stdin.resume();
-    process.stdin.once("data", () => {
-      process.stdin.setRawMode(false);
-      process.stdin.pause();
-      resolve();
-    });
-  });
-
 const ensureSignedInAndOnOrders = async (page, saveCookiesFn) => {
   // Go to Orders once; Amazon will redirect to /ap/signin if needed.
   await page.goto(ORDERS_URL, { waitUntil: "domcontentloaded" });
